@@ -2,31 +2,13 @@
 
 package com.pinterest.ktlint
 
-import com.pinterest.ktlint.core.KtLint
-import com.pinterest.ktlint.core.LintError
-import com.pinterest.ktlint.core.ParseException
-import com.pinterest.ktlint.core.Reporter
-import com.pinterest.ktlint.core.ReporterProvider
-import com.pinterest.ktlint.core.RuleExecutionException
-import com.pinterest.ktlint.core.RuleSetProvider
+import com.pinterest.ktlint.core.*
 import com.pinterest.ktlint.core.internal.containsLintError
 import com.pinterest.ktlint.core.internal.loadBaseline
 import com.pinterest.ktlint.core.internal.relativeRoute
-import com.pinterest.ktlint.internal.ApplyToIDEAGloballySubCommand
-import com.pinterest.ktlint.internal.ApplyToIDEAProjectSubCommand
-import com.pinterest.ktlint.internal.GenerateEditorConfigSubCommand
-import com.pinterest.ktlint.internal.GitPreCommitHookSubCommand
-import com.pinterest.ktlint.internal.GitPrePushHookSubCommand
-import com.pinterest.ktlint.internal.JarFiles
-import com.pinterest.ktlint.internal.KtlintVersionProvider
-import com.pinterest.ktlint.internal.PrintASTSubCommand
-import com.pinterest.ktlint.internal.fileSequence
-import com.pinterest.ktlint.internal.formatFile
-import com.pinterest.ktlint.internal.lintFile
-import com.pinterest.ktlint.internal.loadRulesets
-import com.pinterest.ktlint.internal.location
-import com.pinterest.ktlint.internal.printHelpOrVersionUsage
-import com.pinterest.ktlint.internal.toFilesURIList
+import com.pinterest.ktlint.diff.DiffCalculator
+import com.pinterest.ktlint.diff.DiffEntryWrapper
+import com.pinterest.ktlint.internal.*
 import com.pinterest.ktlint.reporter.plain.internal.Color
 import java.io.File
 import java.io.IOException
@@ -34,18 +16,15 @@ import java.io.PrintStream
 import java.net.URLClassLoader
 import java.net.URLDecoder
 import java.nio.file.FileSystems
-import java.util.ArrayList
-import java.util.LinkedHashMap
-import java.util.ServiceLoader
-import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.Callable
-import java.util.concurrent.Executors
-import java.util.concurrent.Future
-import java.util.concurrent.TimeUnit
+import java.util.*
+import java.util.concurrent.*
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.stream.Collectors
 import kotlin.concurrent.thread
 import kotlin.system.exitProcess
+import org.eclipse.jgit.diff.Edit
+import org.eclipse.jgit.diff.HistogramDiff
 import picocli.CommandLine
 import picocli.CommandLine.Command
 import picocli.CommandLine.Option
@@ -230,12 +209,20 @@ class KtlintCommandLine {
     )
     private var baseline: String = ""
 
+    @Option(
+        names = ["--git-dir"],
+        description = ["Check diff codes from specified git directory"]
+    )
+    private var gitDir: String = ""
+
     @Parameters(hidden = true)
     private var patterns = ArrayList<String>()
 
     private val tripped = AtomicBoolean()
     private val fileNumber = AtomicInteger()
     private val errorNumber = AtomicInteger()
+    private val diffEntryList = mutableListOf<DiffEntryWrapper>()
+    private val gitFileEditMap = mutableMapOf<String, List<Edit>>()
 
     fun run() {
         failOnOldRulesetProviderUsage()
@@ -258,6 +245,8 @@ class KtlintCommandLine {
         reporter.beforeAll()
         if (stdin) {
             lintStdin(ruleSetProviders, userData, reporter)
+        } else if (gitDir.isNotEmpty()) {
+            lintGitDiff(ruleSetProviders, userData, baselineResults.baselineRules, reporter)
         } else {
             lintFiles(ruleSetProviders, userData, baselineResults.baselineRules, reporter)
         }
@@ -298,6 +287,64 @@ class KtlintCommandLine {
             .parallel({ (file, errList) -> report(file.location(relative), errList, reporter) })
     }
 
+    private fun lintGitDiff(
+        ruleSetProviders: Map<String, RuleSetProvider>,
+        userData: Map<String, String>,
+        baseline: Map<String, List<LintError>>?,
+        reporter: Reporter
+    ) {
+        println("git directory is $gitDir")
+        val repoDir = File(gitDir)
+        if (!repoDir.isDirectory) {
+            println("git directory $gitDir is not a directory!")
+            exitProcess(1)
+        }
+        println("git directory path is ${repoDir.absolutePath}")
+        val oldRev = "HEAD"
+        val newRev = "HEAD";
+        val calculator = DiffCalculator.builder().diffAlgorithm(HistogramDiff()).build()
+        var files: List<File>
+        try {
+            val diffEntryList: List<DiffEntryWrapper> =
+                calculator.calculateDiff(repoDir, oldRev, newRev, true)
+                    .stream()
+                    .filter { diffEntry -> !diffEntry.isDeleted() }
+                    .collect(Collectors.toList())
+            this.diffEntryList.clear()
+            this.diffEntryList.addAll(diffEntryList)
+            files = diffEntryList.stream()
+                .map(DiffEntryWrapper::getNewFile)
+                .collect(Collectors.toList())
+        } catch (e: java.lang.Exception) {
+            e.printStackTrace()
+            println("error happened when calculate git diff")
+            files = emptyList()
+        }
+        println("$files")
+        if (files.isEmpty()) {
+            println("There is no file need to check")
+            exitProcess(0)
+        }
+        if (diffEntryList.isNotEmpty()) {
+            gitFileEditMap.clear()
+            gitFileEditMap.putAll(diffEntryList.associate { it.absoluteNewPath to it.editList })
+        }
+        files.asSequence()
+            .filter { it.path.endsWith(".kt") }
+            .map { file ->
+                Callable {
+                    file to process(
+                        file.path,
+                        file.readText(),
+                        ruleSetProviders,
+                        userData,
+                        baseline?.get(file.relativeRoute)
+                    )
+                }
+            }
+            .parallel({ (file, errList) -> reportForGitDiff(file.location(relative), errList, reporter) })
+    }
+
     private fun lintStdin(
         ruleSetProviders: Map<String, RuleSetProvider>,
         userData: Map<String, String>,
@@ -327,6 +374,46 @@ class KtlintCommandLine {
             System.err.println("[ERROR] Please rename META-INF/services/com.github.shyiko.ktlint.core.RuleSetProvider to META-INF/services/com.pinterest.ktlint.core.RuleSetProvider")
             exitProcess(1)
         }
+    }
+
+    private fun reportForGitDiff(
+        fileName: String,
+        errList: List<LintErrorWithCorrectionInfo>,
+        reporter: Reporter
+    ) {
+        val editList = gitFileEditMap[fileName]
+        if (editList.isNullOrEmpty()) {
+            return
+        }
+        val finalErrorList = mutableListOf<LintErrorWithCorrectionInfo>()
+        errList.forEach { error ->
+            editList.forEach innerLoop@{ edit ->
+                if (edit.beginB < error.err.line && edit.endB >= error.err.line) {
+                    finalErrorList.add(error)
+                    return@innerLoop
+                }
+//                if (isEmptyLineSeparatorCheck(event) && event.getLine() === edit.endB + 1) {
+//                    finalErrorList.add(error)
+//                    return@innerLoop
+//                }
+            }
+        }
+        if (finalErrorList.isEmpty()) {
+            return
+        }
+        fileNumber.incrementAndGet()
+        val errListLimit = minOf(finalErrorList.size, maxOf(limit - errorNumber.get(), 0))
+        errorNumber.addAndGet(errListLimit)
+
+        reporter.before(fileName)
+        finalErrorList.head(errListLimit).forEach { (err, corrected) ->
+            reporter.onLintError(
+                fileName,
+                if (!err.canBeAutoCorrected) err.copy(detail = err.detail + " (cannot be auto-corrected)") else err,
+                corrected
+            )
+        }
+        reporter.after(fileName)
     }
 
     private fun report(

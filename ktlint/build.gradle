@@ -29,9 +29,12 @@ dependencies {
   implementation project(':ktlint-ruleset-experimental')
   implementation project(':ktlint-ruleset-standard')
   implementation project(':ktlint-ruleset-test')
+  implementation project(':ktlint-diff')
   implementation deps.kotlin.compiler
   implementation deps.klob
   implementation deps.picocli
+  implementation group: 'org.eclipse.jgit', name: 'org.eclipse.jgit', version: '4.4.1.201607150455-r'
+  implementation group: 'org.slf4j', name: 'slf4j-simple', version: '1.7.25'
 
   testImplementation deps.junit
   testImplementation deps.assertj

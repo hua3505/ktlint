@@ -1,11 +1,11 @@
 import java.net.URI
-import org.jetbrains.dokka.gradle.DokkaTask
+//import org.jetbrains.dokka.gradle.DokkaTask
 
 plugins {
     `java-library`
     `maven-publish`
     signing
-    id("org.jetbrains.dokka")
+//    id("org.jetbrains.dokka")
 }
 
 // Disabling dokka on Java 10+ versions
@@ -18,16 +18,16 @@ java {
 }
 
 if (shouldEnableJavadoc) {
-    val dokkaJavadocTask = tasks.register<DokkaTask>("dokkaJavadoc") {
-        outputFormat = "javadoc"
-        outputDirectory = "$buildDir/javadoc"
-    }
-
-    tasks.named<Jar>("javadocJar") {
-        dependsOn(dokkaJavadocTask)
-        archiveClassifier.set("javadoc")
-        from(dokkaJavadocTask)
-    }
+//    val dokkaJavadocTask = tasks.register<DokkaTask>("dokkaJavadoc") {
+//        outputFormat = "javadoc"
+//        outputDirectory = "$buildDir/javadoc"
+//    }
+//
+//    tasks.named<Jar>("javadocJar") {
+//        dependsOn(dokkaJavadocTask)
+//        archiveClassifier.set("javadoc")
+//        from(dokkaJavadocTask)
+//    }
 }
 
 project.version = project.property("VERSION_NAME")

@@ -293,14 +293,12 @@ class KtlintCommandLine {
         baseline: Map<String, List<LintError>>?,
         reporter: Reporter
     ) {
-        println("git directory is $gitDir")
         val repoDir = File(gitDir)
         if (!repoDir.isDirectory) {
             println("git directory $gitDir is not a directory!")
             exitProcess(1)
         }
-        println("git directory path is ${repoDir.absolutePath}")
-        val oldRev = "HEAD"
+        val oldRev = "HEAD";
         val newRev = "HEAD";
         val calculator = DiffCalculator.builder().diffAlgorithm(HistogramDiff()).build()
         var files: List<File>
@@ -308,7 +306,7 @@ class KtlintCommandLine {
             val diffEntryList: List<DiffEntryWrapper> =
                 calculator.calculateDiff(repoDir, oldRev, newRev, true)
                     .stream()
-                    .filter { diffEntry -> !diffEntry.isDeleted() }
+                    .filter { diffEntry -> !diffEntry.isDeleted() && diffEntry.newPath.endsWith(".kt")}
                     .collect(Collectors.toList())
             this.diffEntryList.clear()
             this.diffEntryList.addAll(diffEntryList)
@@ -320,7 +318,6 @@ class KtlintCommandLine {
             println("error happened when calculate git diff")
             files = emptyList()
         }
-        println("$files")
         if (files.isEmpty()) {
             println("There is no file need to check")
             exitProcess(0)
@@ -330,7 +327,6 @@ class KtlintCommandLine {
             gitFileEditMap.putAll(diffEntryList.associate { it.absoluteNewPath to it.editList })
         }
         files.asSequence()
-            .filter { it.path.endsWith(".kt") }
             .map { file ->
                 Callable {
                     file to process(
@@ -342,7 +338,7 @@ class KtlintCommandLine {
                     )
                 }
             }
-            .parallel({ (file, errList) -> reportForGitDiff(file.location(relative), errList, reporter) })
+            .parallel({ (file, errList) -> reportForGitDiff(file.absolutePath, errList, reporter) })
     }
 
     private fun lintStdin(
@@ -385,6 +381,7 @@ class KtlintCommandLine {
         if (editList.isNullOrEmpty()) {
             return
         }
+
         val finalErrorList = mutableListOf<LintErrorWithCorrectionInfo>()
         errList.forEach { error ->
             editList.forEach innerLoop@{ edit ->

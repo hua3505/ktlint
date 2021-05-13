@@ -1,0 +1,9 @@
+plugins {
+  id 'org.jetbrains.kotlin.jvm'
+  id 'ktlint-publication'
+  id 'io.franzbecker.gradle-lombok' version '4.0.0'
+}
+
+dependencies {
+  implementation group: 'org.eclipse.jgit', name: 'org.eclipse.jgit', version: '4.4.1.201607150455-r'
+}
